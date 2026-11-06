@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Test stub: records `git push ...` in $STUB_LOG/push.log instead of pushing; every other command runs the real git.
+if [ "${1:-}" = push ]; then
+  printf '%s\n' "$*" >> "$STUB_LOG/push.log"
+  exit 0
+fi
+exec "$REAL_GIT" "$@"

@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Test stub for gh: logs every call to $STUB_LOG/gh.log, and nothing reaches GitHub.
+# - `issue list` prints $STUB_LOG/open-issue (an issue number) if it exists; `issue view` prints $STUB_LOG/issue-body.
+# - `issue create`, `issue edit`: copy --body-file to $STUB_LOG/body.md.
+# - `release create`: copies --notes-file to $STUB_LOG/notes.md and each asset to $STUB_LOG/assets/.
+printf '%s\n' "$*" >> "$STUB_LOG/gh.log"
+case "${1:-} ${2:-}" in
+  "issue list") [ ! -f "$STUB_LOG/open-issue" ] || cat "$STUB_LOG/open-issue" ;;
+  "issue view") [ ! -f "$STUB_LOG/issue-body" ] || cat "$STUB_LOG/issue-body" ;;
+  "issue create" | "issue edit")
+    while [ $# -gt 0 ]; do
+      if [ "$1" = --body-file ]; then cp "$2" "$STUB_LOG/body.md"; fi
+      shift
+    done
+    ;;
+  "release create")
+    shift 3
+    mkdir -p "$STUB_LOG/assets"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --notes-file)
+          cp "$2" "$STUB_LOG/notes.md"
+          shift
+          ;;
+        --repo | --target | --title) shift ;;
+        -*) ;;
+        *) cp "$1" "$STUB_LOG/assets/" ;;
+      esac
+      shift
+    done
+    ;;
+esac
+exit 0
