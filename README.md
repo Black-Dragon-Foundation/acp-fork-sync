@@ -57,8 +57,9 @@ This job runs upstream's code, which is why it holds nothing worth stealing.
      with the tarball and its `.sha256`, and closes the fork's sync issue. If creating the release fails after the
      push, the branch is left with an unreleased tip, and the next run releases it.
    - **`conflict`, `red`**: it pushes nothing. It opens the fork's issue "drgnx sync blocked: upstream `<tag>`",
-     or updates it with an edit and a comment. The issue carries the conflicting files or the end of the output,
-     and the exact commands to carry the patch by hand. A block that's already reported is left alone.
+     or updates it with an edit and a comment. The issue carries the conflicting files or the failing command's exit status and
+     the lines around its first error, and the exact commands to carry the patch by hand. A block that's already
+     reported is left alone. The job then fails, after the issue is written, so a skipped release shows as a red run.
 4. Last, it fast-forwards the fork's upstream branch.
 
 Workflow-file changes push like any other, because the App token holds the workflows permission.
@@ -213,7 +214,8 @@ only log. The cases:
 - a hand-pushed branch is released at its tip;
 - a fix on a released branch gets `-drgnx.2`;
 - a fixed branch is squashed on the next replay;
-- a tarball without a shrinkwrap is red;
+- a tarball without a shrinkwrap is red; a failing `prepare` script doesn't stop the repack;
+- a blocked fork fails the publish job; the issue shows the exit status and the first error;
 - a named tag (DeepSeek's manual run) is honoured;
 - the issue is updated rather than duplicated, a block already reported is left alone, and a resolved one is
   closed;

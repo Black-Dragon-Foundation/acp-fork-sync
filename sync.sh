@@ -170,13 +170,22 @@ write_outcome() { # RESULT [PKG]
   note "$fork: $1${TAG:+ for upstream $TAG}${MODE:+ ($MODE)}"
 }
 
+# run_logged NAME CMD [VAR=VALUE...]: run CMD (bash) with the variables, its output appended to the log; the log then
+# says how it ended, so the issue can show the command's own status and error
+run_logged() {
+  local name=$1 cmd=$2 st
+  shift 2
+  st=0
+  env "$@" bash -c "$cmd" 2>&1 | tee -a "$OUT/check.log" || st=${PIPESTATUS[0]}
+  [ "$st" -eq 0 ] || printf 'acp-fork-sync: %s exited with status %s\n' "$name" "$st" | tee -a "$OUT/check.log"
+  return "$st"
+}
+
 # pack: run PACK_CMD; it must leave exactly one tarball, and that tarball must hold npm-shrinkwrap.json
 pack() {
   local tmp pkgs
   tmp=$(mktemp -d)
-  if ! PACK_OUT=$OUT/pkg PACK_TMP=$tmp SYNC_HOME=$here bash -c "$PACK_CMD" 2>&1 | tee -a "$OUT/check.log"; then
-    return 1
-  fi
+  run_logged PACK_CMD "$PACK_CMD" PACK_OUT="$OUT/pkg" PACK_TMP="$tmp" SYNC_HOME="$here" || return 1
   pkgs=$(find "$OUT/pkg" -maxdepth 1 -name '*.tgz')
   if [ -z "$pkgs" ] || [ "$(printf '%s\n' "$pkgs" | wc -l)" -ne 1 ]; then
     printf 'acp-fork-sync: PACK_CMD must write exactly one .tgz into $PACK_OUT\n' | tee -a "$OUT/check.log"
@@ -214,7 +223,7 @@ prepare() {
   git switch --quiet --detach "$commit"
   say "checking upstream $TAG with the patch ($MODE)"
   PKG=''
-  if bash -c "$CHECK_CMD" 2>&1 | tee -a "$OUT/check.log" && { [ -z "$PACK_CMD" ] || pack; }; then
+  if run_logged CHECK_CMD "$CHECK_CMD" && { [ -z "$PACK_CMD" ] || pack; }; then
     write_outcome ok "$PKG"
   else
     write_outcome red
@@ -270,6 +279,22 @@ manual_steps() {
   printf '```\n\nThe next run checks the branch, releases it as `%s-drgnx.1` and closes this issue.\n' "$TAG"
 }
 
+# failure_excerpt: the exit status line and the lines around the first error of the log (the last lines when none looks
+# like an error; the noise after an error is mostly its consequences)
+failure_excerpt() {
+  local clean first
+  clean=$OUT/check.clean.log
+  sed 's/\x1b\[[0-9;]*[A-Za-z]//g' "$OUT/check.log" > "$clean" 2> /dev/null || : > "$clean"
+  grep -E '^acp-fork-sync: [A-Z_]+ exited with status' "$clean" | tail -n 1 || true
+  first=$(grep -niE '(^|[^[:alnum:]_.-])(npm error|npm err!|error[:!]|fatal[:!]|failed|FAIL )|command not found|: not found|ERR_[A-Z_]+' "$clean" |
+    grep -v 'acp-fork-sync: ' | head -n 1 | cut -d: -f1) || true
+  if [ -n "$first" ]; then
+    sed -n "$((first > 20 ? first - 20 : 1)),$((first + 30))p" "$clean" | tail -c 20000
+  else
+    tail -n 80 "$clean" | tail -c 20000
+  fi
+}
+
 issue_body() { # MARKER
   printf 'Upstream release **%s** (`%s`) has no drgnx release yet, and nothing was pushed.\n\n' "$TAG" "$TAG_SHA"
   case "$O_RESULT" in
@@ -279,8 +304,8 @@ issue_body() { # MARKER
       ;;
     red)
       printf 'The patch applies, but the checks or the package failed (CHECK_CMD, PACK_CMD in '
-      printf '`acp-fork-sync/forks/%s.env`). The end of their output:\n\n````text\n' "$fork"
-      sed 's/\x1b\[[0-9;]*[A-Za-z]//g' "$OUT/check.log" 2> /dev/null | tail -n 150 | tail -c 50000
+      printf '`acp-fork-sync/forks/%s.env`). The failing command'"'"'s own error:\n\n````text\n' "$fork"
+      failure_excerpt
       printf '\n````\n'
       ;;
   esac
@@ -367,6 +392,8 @@ publish() {
     conflict | red) report ;;
   esac
   mirror_upstream_branch
+  # a blocked fork makes the run red, after the issue says why, so a skipped release can't hide behind a green run
+  case "$O_RESULT" in conflict | red) die "$fork: blocked at upstream $TAG ($O_RESULT); no release" ;; esac
 }
 
 keepalive() {

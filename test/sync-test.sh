@@ -91,10 +91,13 @@ run_sync() {
     echo "prepare exited $?"
     cat "$C/prepare.log"
   }
-  (cd "$C" && DRGNX_SYNC_WORK=$C/work2 bash "$sync" publish test ${1:+"$1"}) > "$C/publish.log" 2>&1 || {
-    echo "publish exited $?"
+  PUB_RC=0
+  (cd "$C" && DRGNX_SYNC_WORK=$C/work2 bash "$sync" publish test ${1:+"$1"}) > "$C/publish.log" 2>&1 || PUB_RC=$?
+  # a blocked fork makes publish fail on purpose; any other failure is shown
+  if [ "$PUB_RC" -ne 0 ] && ! result_is red && ! result_is conflict; then
+    echo "publish exited $PUB_RC"
     cat "$C/publish.log"
-  }
+  fi
 }
 
 result_is() { grep -qx "RESULT=$1" "$C/out/outcome.env" 2> /dev/null; }
@@ -131,6 +134,7 @@ check "release carries its SHA-256" grep -q "$(sha_of "$C/out/pkg/test-1.0.0.tgz
 check "notes give the SHA-256" notes_has "$(sha_of "$C/out/pkg/test-1.0.0.tgz")"
 check "main fast-forwarded to upstream" pushed "$up_sha:refs/heads/main"
 check "no issue opened" no gh_called "issue create"
+check "publish succeeds" test "$PUB_RC" -eq 0
 
 # 2. a conflicting release: nothing pushed or released; the issue names the files and the tag
 new_case conflict
@@ -141,6 +145,7 @@ check "no branch push" no pushed "refs/heads/drgnx/"
 check "no release" no gh_called "release create"
 check "issue opened" gh_called "issue create"
 check "issue names the conflicting file" body_has "a.txt"
+check "publish fails, so the run is red" test "$PUB_RC" -ne 0
 check "issue names the upstream tag" body_has "v1.1.0"
 
 # 3. a red check: nothing pushed or released; the issue carries the failing output
@@ -265,6 +270,21 @@ check "outcome red" result_is red
 check "no branch push" no pushed "refs/heads/drgnx/"
 check "no release" no gh_called "release create"
 check "issue names the missing shrinkwrap" body_has "npm-shrinkwrap.json"
+check "publish fails, so the run is red" test "$PUB_RC" -ne 0
+
+# 13b. a failing check: the issue shows the command's exit status and the lines around its first error, not the tail
+new_case firsterror
+up_commit b.txt "upstream feature" "feat: b" v1.1.0
+# shellcheck disable=SC2016
+printf 'CHECK_CMD=%q\n' 'for i in $(seq 1 30); do echo "before $i"; done; echo "npm error code 127"; echo "npm error husky: not found"; for i in $(seq 1 400); do echo "noise $i"; done; exit 3' >> "$C/sync.env"
+run_sync
+check "outcome red" result_is red
+check "issue gives the exit status" body_has "exited with status 3"
+check "issue shows the first error" body_has "npm error code 127"
+check "issue shows the lines before it" body_has "before 30"
+check "issue drops the unrelated head" no body_has "before 5"
+check "issue drops the tail noise" no body_has "noise 400"
+check "publish fails, so the run is red" test "$PUB_RC" -ne 0
 
 # 14. a named release (DeepSeek's pins are moved by hand): that one, not the newest
 new_case named
@@ -314,6 +334,21 @@ check "nothing pushed while the repo is active" no pushed "refs/heads/main"
 (cd "$C/repo" && KEEPALIVE_DAYS=0 bash "$sync" keepalive) > "$C/ka.log" 2>&1 || cat "$C/ka.log"
 check "empty commit pushed once it is quiet" pushed "HEAD:refs/heads/main"
 check "the commit is empty" test "$(g -C "$C/repo" rev-parse 'HEAD^{tree}')" = "$(g -C "$C/repo" rev-parse 'HEAD~1^{tree}')"
+
+# 19. pack-shrinkwrap.sh: a package whose prepare script fails (upstream's husky, absent in a bare tarball) still packs
+if command -v npm > /dev/null; then
+  case_name=shrinkwrap
+  C=$T/shrinkwrap
+  mkdir -p "$C/in/package" "$C/out"
+  printf '{"name":"x","version":"1.0.0","files":["a.js"],"scripts":{"prepare":"false"},"devDependencies":{"husky":"1"}}\n' \
+    > "$C/in/package/package.json"
+  echo 1 > "$C/in/package/a.js"
+  tar -czf "$C/x.tgz" -C "$C/in" package
+  check "packs despite a failing prepare" bash "$here/../pack-shrinkwrap.sh" "$C/x.tgz" "$C/out"
+  check "the tarball has the shrinkwrap" bash -c "tar -tzf '$C'/out/*.tgz | grep -qx package/npm-shrinkwrap.json"
+else
+  printf 'skip shrinkwrap: no npm\n'
+fi
 
 printf '%d passed, %d failed\n' "$passes" "$fails"
 [ "$fails" -eq 0 ]

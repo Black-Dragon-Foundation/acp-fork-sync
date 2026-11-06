@@ -8,6 +8,9 @@ out=$(cd "$2" && pwd)
 stage=$(mktemp -d)
 tar -xzf "$tgz" -C "$stage"
 cd "$stage/package"
+# the package is built already: its lifecycle scripts (prepare runs husky, a devDependency) are not for the repack, and
+# npm pack runs prepare even with --ignore-scripts
+npm pkg delete scripts.prepare scripts.prepack scripts.postpack
 # devDependencies may name unpublished workspace packages, and a consumer never installs them
 npm pkg delete devDependencies
 npm install --package-lock-only --ignore-scripts --no-audit --no-fund
